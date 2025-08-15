@@ -26,20 +26,21 @@ class ReplacementLevelCalculator:
         stats_df: pl.DataFrame, 
         position: Position
     ) -> Optional[Dict[str, Any]]:
-        """Find replacement level player for a position.
+        """Find replacement level player matching R script methodology.
         
-        In WAR methodology, replacement level is typically the worst player
-        who would still be a starter across all teams. For a 16-team league
-        with 1 QB per team, this would be the 16th-best QB.
+        Implements the exact approach from WAR_function.R lines 761-765, 828-832, etc:
+        - Get top N players (teams * position_requirement)
+        - Replacement is the WORST of these starters (lowest rank)
+        - For 14 teams with 1 RB each: 14th ranked RB is replacement level
         
         Args:
             stats_df: DataFrame with player statistics
             position: Position to find replacement level for
             
         Returns:
-            Dictionary with replacement level information
+            Dictionary with replacement level information matching R script
         """
-        logger.info(f"Finding replacement level for {position}")
+        logger.info(f"Finding replacement level for {position} (R script methodology)")
         
         # Get position requirements
         min_req, max_req = self.league_config.roster.get_position_requirements(position)
@@ -48,10 +49,11 @@ class ReplacementLevelCalculator:
             logger.warning(f"Position {position} has no roster requirements")
             return None
         
-        # Calculate total starter spots for this position
-        total_starters = self.league_config.teams * max_req
+        # Calculate starter pool size (R script: teams * position_requirement)
+        starter_pool_size = self.league_config.teams * max_req
         
-        # Filter and rank players by fantasy points
+        # Get all qualified players at this position, sorted by total fantasy points
+        # This matches the R script's approach of group_by(player_id) |> summarise(total_pts = sum(...))
         position_players = (
             stats_df
             .filter(
@@ -62,18 +64,23 @@ class ReplacementLevelCalculator:
             .with_row_count("rank", offset=1)
         )
         
-        if len(position_players) < total_starters:
+        if len(position_players) < starter_pool_size:
             logger.warning(
                 f"Not enough qualified players at {position}: "
-                f"need {total_starters}, have {len(position_players)}"
+                f"need {starter_pool_size}, have {len(position_players)}"
             )
             # Use the worst available player as replacement
             replacement_rank = len(position_players)
         else:
-            replacement_rank = total_starters
+            # Replacement is the worst starter (R script lines 828-832)
+            # top_n(...) %>% top_n(-1,wt = pts) - gets the lowest of the top N
+            replacement_rank = starter_pool_size
         
-        # Get replacement level player (worst starter)
-        replacement_player = position_players.filter(pl.col("rank") == replacement_rank)
+        # Get the starter pool (top N players)
+        starter_pool = position_players.head(starter_pool_size)
+        
+        # Find replacement level player (worst of the starters)
+        replacement_player = starter_pool.tail(1)  # Last player in starter pool
         
         if len(replacement_player) == 0:
             logger.error(f"Could not find replacement level player for {position}")
@@ -81,29 +88,36 @@ class ReplacementLevelCalculator:
         
         replacement_data = replacement_player.row(0, named=True)
         
-        # Calculate average starter statistics for WAA calculations
-        starter_pool = position_players.head(total_starters)
+        # Calculate position averages for expected team score calculations
+        # This is used in the R script's exp_team_score calculation
+        position_avg_fp = starter_pool['avg_fantasy_points_mppr'].mean()
+        
+        # Calculate average starter info for WAA calculations (R script lines 783-789)
         avg_starter_points = starter_pool['total_fantasy_points_mppr'].mean()
         avg_starter_games = starter_pool['games_played'].mean()
+        avg_starter_win_prob = 0.5  # This will be calculated properly in the WAR engine
         
         replacement_info = {
             'player_id': replacement_data['player_id'],
             'rank': replacement_rank,
-            'total_starters': total_starters,
+            'total_starters': starter_pool_size,
             'avg_fantasy_points': replacement_data['avg_fantasy_points_mppr'],
             'total_fantasy_points': replacement_data['total_fantasy_points_mppr'],
             'games_played': replacement_data['games_played'],
+            'position_avg_fantasy_points': position_avg_fp,  # For exp_team_score calculation
             'avg_starter_info': {
                 'avg_fantasy_points': avg_starter_points / avg_starter_games,
                 'total_fantasy_points': avg_starter_points,
                 'games_played': avg_starter_games,
-            }
+            },
+            'avg_starter_win_prob': avg_starter_win_prob  # Will be updated in WAR calculation
         }
         
         logger.info(
-            f"Replacement level for {position}: rank {replacement_rank}, "
+            f"Replacement level for {position}: rank {replacement_rank}/{starter_pool_size} starters, "
             f"player {replacement_data.get('player_name', replacement_data['player_id'])}, "
-            f"{replacement_info['avg_fantasy_points']:.2f} avg points"
+            f"{replacement_info['avg_fantasy_points']:.2f} avg points, "
+            f"position avg: {position_avg_fp:.2f}"
         )
         
         return replacement_info

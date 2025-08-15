@@ -183,70 +183,76 @@ class WARCalculator:
         team_context: Dict[str, float],
         weeks: List[int]
     ) -> Optional[WARResult]:
-        """Calculate WAR for an individual player.
+        """Calculate WAR using the exact methodology from WAR_function.R.
+        
+        Implements the correct formula from lines 768-874 in the R script:
+        1. Calculate expected team score: (player_points - position_avg) + weekfp
+        2. Use pnorm to get win probability
+        3. WAR = (Player_Avg_Win_% × Games) - (Replacement_Avg_Win_% × Games)
         
         Args:
             player_data: Dictionary with player statistics
             replacement_info: Replacement level information
-            team_context: Team scoring context
+            team_context: League context (weekfp & weeksd)
             weeks: Weeks included in analysis
             
         Returns:
             WAR result for the player
         """
         try:
-            # Calculate expected team score with this player
-            player_fp = player_data['total_fantasy_points_mppr']
-            avg_fp = player_data['avg_fantasy_points_mppr']
+            player_avg_fp = player_data['avg_fantasy_points_mppr']
             games_played = player_data['games_played']
+            position = player_data['position']
             
-            # Calculate win probability using normal distribution
-            # This replicates the pnorm function from the R script
+            # Get position average from replacement info
+            position_avg_fp = replacement_info.get('position_avg_fantasy_points', player_avg_fp)
+            
+            # Calculate expected team score (R script line 768, 835, 903, etc.)
+            # exp_team_score = (player_points - position_avg) + weekfp
+            expected_team_score = (player_avg_fp - position_avg_fp) + team_context['team_avg_score']
+            
+            # Calculate win probability using pnorm (R script lines 772, 839, 907, etc.)
+            # pnorm(exp_team_score, weekfp, weeksd)
             win_prob = self.win_prob_calc.calculate_win_probability(
-                player_fp,
+                expected_team_score,
+                team_context['team_avg_score'],  # weekfp
+                team_context['team_score_std']   # weeksd
+            )
+            
+            # Calculate expected wins
+            expected_wins = win_prob * games_played
+            
+            # Calculate replacement level win probability
+            # Replacement level player has 0 contribution above position average
+            replacement_expected_team_score = team_context['team_avg_score']  # Just weekfp
+            replacement_win_prob = self.win_prob_calc.calculate_win_probability(
+                replacement_expected_team_score,
                 team_context['team_avg_score'],
                 team_context['team_score_std']
             )
-            
-            expected_wins = win_prob * games_played
-            
-            # Calculate replacement level comparison
-            replacement_fp = replacement_info['avg_fantasy_points']
-            replacement_win_prob = self.win_prob_calc.calculate_win_probability(
-                replacement_fp,
-                team_context['team_avg_score'], 
-                team_context['team_score_std']
-            )
-            
             replacement_wins = replacement_win_prob * games_played
             
-            # Calculate WAR and WAA
+            # Calculate WAR (R script lines 802, 870, 938, etc.)
+            # WAR = round(Wins_exp - repl_wins, 2)
             wins_above_replacement = expected_wins - replacement_wins
             
-            # WAA calculation (wins above average starter)
-            avg_starter_info = replacement_info.get('avg_starter_info', {})
-            if avg_starter_info:
-                avg_starter_win_prob = self.win_prob_calc.calculate_win_probability(
-                    avg_starter_info['avg_fantasy_points'],
-                    team_context['team_avg_score'],
-                    team_context['team_score_std']
-                )
-                avg_starter_wins = avg_starter_win_prob * games_played
-                wins_above_average = expected_wins - avg_starter_wins
-            else:
-                wins_above_average = 0.0
+            # Calculate WAA (Wins Above Average starter)
+            # This uses the average of all starter-level players
+            avg_starter_win_prob = replacement_info.get('avg_starter_win_prob', replacement_win_prob)
+            avg_starter_wins = avg_starter_win_prob * games_played
+            wins_above_average = expected_wins - avg_starter_wins
             
             # Create WAR result
             war_result = WARResult(
                 player_id=player_data['player_id'],
                 season=player_data['season'],
-                position=player_data['position'],
+                position=position,
                 player_name=player_data.get('player_name'),
                 team=player_data.get('team'),
                 games_played=games_played,
                 weeks_analyzed=weeks,
-                total_fantasy_points=player_fp,
-                average_fantasy_points=avg_fp,
+                total_fantasy_points=player_data['total_fantasy_points_mppr'],
+                average_fantasy_points=player_avg_fp,
                 win_percentage=win_prob,
                 expected_wins=expected_wins,
                 replacement_win_percentage=replacement_win_prob,
@@ -264,74 +270,75 @@ class WARCalculator:
             return None
     
     def _calculate_team_scoring_context(self, stats_df: pl.DataFrame) -> Dict[str, float]:
-        """Calculate team scoring context for win probability calculations.
+        """Calculate league context (weekfp & weeksd) matching R script lines 532-746.
         
-        This replicates the team average weekly score calculations from the R script.
+        This replicates the exact methodology from WAR_function.R:
+        - weekfp: fantasy team average weekly score
+        - weeksd: fantasy team score standard deviation
         
         Args:
             stats_df: Player statistics DataFrame
             
         Returns:
-            Dictionary with team scoring mean and standard deviation
+            Dictionary with weekfp (team_avg_score) and weeksd (team_score_std)
         """
-        logger.info("Calculating team scoring context")
+        logger.info("Calculating league context (weekfp & weeksd)")
         
-        # Get top players at each position (starter pool)
-        team_scores = []
+        # Initialize weekfp (team average) and weeksd components
+        weekfp_total = 0.0
+        variance_total = 0.0
         
+        # Process each position according to league roster requirements
         for position in self.league_config.get_all_positions():
             min_req, max_req = self.league_config.roster.get_position_requirements(position)
             
             if max_req == 0:
                 continue
             
-            # Get top players at this position
+            # Get top N players at this position (starter pool)
+            # This matches the R script's approach: teams * position_requirement
+            starter_pool_size = self.league_config.teams * max_req
+            
             position_players = (
                 stats_df
                 .filter(pl.col("position") == position)
                 .group_by("player_id")
                 .agg([
                     pl.col("fantasy_points_mppr").sum().alias("total_points"),
-                    pl.col("season").first(),
-                    pl.col("position").first(),
+                    pl.col("fantasy_points_mppr").mean().alias("avg_weekly_points")
                 ])
                 .sort("total_points", descending=True)
-                .head(self.league_config.teams * max_req)
+                .head(starter_pool_size)
             )
             
             if len(position_players) > 0:
-                # Calculate average points for this position group
-                avg_points = position_players['total_points'].mean()
-                std_points = position_players['total_points'].std() or 0.0
+                # Calculate position average and std dev (matching R's describe() function)
+                position_mean = position_players['avg_weekly_points'].mean()
+                position_std = position_players['avg_weekly_points'].std() or 0.0
                 
-                # Weight by number of starters at this position
-                for _ in range(max_req):
-                    team_scores.append({
-                        'position': position,
-                        'avg_points': avg_points,
-                        'std_points': std_points,
-                    })
+                # Add to team context weighted by roster slots (R script lines 534-625)
+                weekfp_contribution = position_mean * max_req
+                weekfp_total += weekfp_contribution
+                
+                # Add variance (R script lines 629-745: sqrt of sum of variances)
+                variance_contribution = (position_std ** 2) * max_req
+                variance_total += variance_contribution
+                
+                logger.debug(f"{position}: mean={position_mean:.2f}, std={position_std:.2f}, slots={max_req}")
         
-        # Calculate overall team context
-        if team_scores:
-            total_avg = sum(pos['avg_points'] for pos in team_scores)
-            
-            # Calculate combined standard deviation
-            # Using sum of variances for independent positions
-            total_variance = sum(pos['std_points']**2 for pos in team_scores)
-            total_std = math.sqrt(total_variance)
-            
-        else:
-            logger.warning("No team scoring context calculated, using defaults")
-            total_avg = 100.0  # Default team score
-            total_std = 20.0   # Default standard deviation
+        # Calculate final weeksd (standard deviation)
+        weeksd = math.sqrt(variance_total) if variance_total > 0 else 1.0
+        
+        # Ensure non-zero values
+        weekfp = max(weekfp_total, 1.0)
+        weeksd = max(weeksd, 1.0)
         
         context = {
-            'team_avg_score': total_avg,
-            'team_score_std': max(total_std, 1.0),  # Ensure non-zero std
+            'team_avg_score': weekfp,  # This is weekfp from R script
+            'team_score_std': weeksd,  # This is weeksd from R script
         }
         
-        logger.info(f"Team scoring context: avg={total_avg:.2f}, std={total_std:.2f}")
+        logger.info(f"League context calculated: weekfp={weekfp:.2f}, weeksd={weeksd:.2f}")
         return context
     
     def _aggregate_to_season(self, weekly_stats: pl.DataFrame) -> pl.DataFrame:

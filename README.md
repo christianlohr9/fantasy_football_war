@@ -13,8 +13,9 @@ A modern Python implementation of Wins Above Replacement (WAR) calculations for 
 ### Advanced Analytics
 - **WAR Calculations**: Wins Above Replacement methodology adapted for fantasy football
 - **MPPR Scoring**: EPA-based scoring system with negative points for attempts/targets  
-- **Win Probability**: Normal distribution-based probability calculations
-- **Replacement Level**: Automatically determines replacement level players by position
+- **Win Probability**: Normal distribution-based probability calculations using exact `pnorm` methodology
+- **Replacement Level**: Automatically determines replacement level players by position (e.g., 24th RB for 12 teams)
+- **🆕 Rewritten WAR Engine**: Complete rewrite matching proven R methodology for accurate calculations
 
 ### Position Support
 - **Offensive Positions**: QB, RB, WR, TE with full MPPR scoring ✅
@@ -307,11 +308,13 @@ fantasy-war/
 
 ### Key Components
 
-#### WAR Calculation Engine (`calculators/war_engine.py`)
-- Implements the core WAR methodology
-- Calculates team scoring context and win probabilities
-- Determines replacement level players automatically
-- Supports complex flex position calculations
+#### 🆕 Rewritten WAR Calculation Engine (`calculators/war_engine.py`)
+- **Complete rewrite** matching proven R methodology from `WAR_function.R`
+- **League Context**: Proper `weekfp` and `weeksd` calculations weighted by roster requirements
+- **Replacement Level**: Exact ranking methodology (e.g., 24th RB for 12 teams × 2 RBs)
+- **Win Probability**: Precise `pnorm(expected_team_score, weekfp, weeksd)` implementation
+- **WAR Formula**: Correct `(Player_Avg_Win_% × Games) - (Replacement_Avg_Win_% × Games)`
+- Supports complex flex position calculations and all IDP positions
 
 #### Data Processing (`data/processors.py`)  
 - Converts raw NFL stats to MPPR fantasy points

@@ -25,41 +25,45 @@ class WinProbabilityCalculator:
     
     def calculate_win_probability(
         self,
-        player_score: float,
-        team_average_score: float,
-        team_score_std: float
+        expected_team_score: float,
+        weekfp: float,
+        weeksd: float
     ) -> float:
-        """Calculate win probability for a player's expected team score.
+        """Calculate win probability using exact R script pnorm methodology.
         
-        This replicates the pnorm function from the R script:
-        pnorm(expected_team_score, mean=team_avg_score, sd=team_score_std)
+        Replicates the exact pnorm calls from WAR_function.R lines 772, 839, 907, etc:
+        pnorm(exp_team_score, weekfp, weeksd)
+        
+        The expected_team_score should already be calculated as:
+        (player_points - position_avg) + weekfp
         
         Args:
-            player_score: Player's contribution to team score
-            team_average_score: Average team score in the league
-            team_score_std: Standard deviation of team scores
+            expected_team_score: Expected team score with this player
+            weekfp: League average team score (from R script)
+            weeksd: League team score standard deviation (from R script)
             
         Returns:
-            Win probability (0.0 to 1.0)
+            Win probability (0.0 to 1.0) using normal distribution CDF
         """
-        if team_score_std <= 0:
-            logger.warning("Team score standard deviation is zero or negative, using default")
-            team_score_std = 1.0
+        if weeksd <= 0:
+            logger.warning("weeksd (team score std dev) is zero or negative, using default")
+            weeksd = 1.0
         
-        # Calculate expected team score with this player
-        # The original R script adds/subtracts individual player performance from team average
-        expected_team_score = player_score
-        
-        # Use scipy.stats.norm.cdf to replicate R's pnorm
-        # pnorm gives the cumulative probability (CDF) of the normal distribution
+        # Use scipy.stats.norm.cdf to exactly replicate R's pnorm function
+        # pnorm(q, mean, sd) is equivalent to norm.cdf(q, loc=mean, scale=sd)
         win_prob = stats.norm.cdf(
-            expected_team_score,
-            loc=team_average_score,
-            scale=team_score_std
+            expected_team_score,  # q parameter in pnorm
+            loc=weekfp,          # mean parameter (weekfp)
+            scale=weeksd         # sd parameter (weeksd)
         )
         
         # Ensure win probability is within valid bounds
         win_prob = max(0.0, min(1.0, win_prob))
+        
+        logger.debug(
+            f"Win prob calculation: exp_team_score={expected_team_score:.2f}, "
+            f"weekfp={weekfp:.2f}, weeksd={weeksd:.2f} -> win_prob={win_prob:.4f}"
+        )
         
         return win_prob
     
