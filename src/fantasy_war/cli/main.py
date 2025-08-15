@@ -186,6 +186,8 @@ def calculate_war(
     
     # Save results if requested
     if output_file:
+        # Ensure output directory exists
+        output_file.parent.mkdir(parents=True, exist_ok=True)
         _save_war_results(league_war, output_file)
         console.print(f"\n[bold green]✓[/bold green] Results saved to {output_file}")
     
@@ -288,6 +290,8 @@ def auction_values(
     
     # Save if requested
     if output_file:
+        # Ensure output directory exists
+        output_file.parent.mkdir(parents=True, exist_ok=True)
         _save_auction_values(auction_values, output_file)
         console.print(f"\n[bold green]✓[/bold green] Auction values saved to {output_file}")
 
@@ -406,7 +410,7 @@ def _display_auction_values(auction_values):
     # Sort by auction value
     sorted_values = sorted(auction_values, key=lambda x: x.auction_value_dollars, reverse=True)
     
-    console.print(f"\n[bold green]💰 Top 30 Auction Values[/bold green]")
+    console.print(f"\n[bold green]💰 All {len(sorted_values)} Auction Values[/bold green]")
     
     table = Table(title="Auction Values")
     table.add_column("Rank", justify="right", style="cyan")
@@ -418,7 +422,7 @@ def _display_auction_values(auction_values):
     table.add_column("Sleeper", justify="center")
     table.add_column("Bust Risk", justify="center")
     
-    for i, av in enumerate(sorted_values[:30], 1):
+    for i, av in enumerate(sorted_values, 1):
         sleeper_marker = "💎" if av.is_sleeper else ""
         bust_marker = "⚠️" if av.is_bust_risk else ""
         
